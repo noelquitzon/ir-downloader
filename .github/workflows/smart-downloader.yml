@@ -19,7 +19,7 @@ on:
         default: '95m'
 
 permissions:
-  contents: write  # مهم: اجازه پوش به مخزن
+  contents: write
 
 jobs:
   download-and-commit:
@@ -45,12 +45,24 @@ jobs:
       - name: 🧠 تشخیص نوع و استخراج نام اصلی
         id: classify
         run: |
-          # نام اصلی از لینک
+          # نام اصلی از لینک (بدون پارامترها)
           RAW_NAME=$(basename "${{ github.event.inputs.file_url }}" | sed 's/\?.*//' | sed 's/%20/ /g')
           if [ -z "$RAW_NAME" ]; then RAW_NAME="unknown_file"; fi
-          # حذف کاراکترهای غیرمجاز برای نام پوشه (جایگزینی با _)
-          SAFE_NAME=$(echo "$RAW_NAME" | sed 's/[\\/:*?"<>|]/_/g')
-          # تشخیص MIME
+          
+          # جدا کردن نام پایه (بدون پسوند) برای پوشه
+          BASENAME_NOEXT="${RAW_NAME%.*}"
+          if [ "$BASENAME_NOEXT" = "$RAW_NAME" ]; then
+            # فایل بدون پسوند
+            BASENAME_NOEXT="$RAW_NAME"
+          fi
+          # نام امن برای پوشه (جایگزینی کاراکترهای غیرمجاز با _)
+          FOLDER_NAME=$(echo "$BASENAME_NOEXT" | sed 's/[\\/:*?"<>|]/_/g')
+          if [ -z "$FOLDER_NAME" ]; then FOLDER_NAME="downloaded_file"; fi
+          
+          # نام امن برای فایل درون آرشیو (با پسوند)
+          ORIGINAL_FILENAME=$(echo "$RAW_NAME" | sed 's/[\\/:*?"<>|]/_/g')
+          
+          # تشخیص MIME و دسته‌بندی
           MIME=$(file -b --mime-type downloaded_file)
           EXT="${RAW_NAME##*.}"
           EXT=$(echo "$EXT" | tr '[:upper:]' '[:lower:]')
@@ -68,26 +80,32 @@ jobs:
           fi
           
           echo "CAT=$CAT" >> $GITHUB_ENV
-          echo "SAFE_NAME=$SAFE_NAME" >> $GITHUB_ENV
-          echo "✅ دسته: $CAT → زیرپوشه: $SAFE_NAME"
+          echo "FOLDER_NAME=$FOLDER_NAME" >> $GITHUB_ENV
+          echo "ORIGINAL_FILENAME=$ORIGINAL_FILENAME" >> $GITHUB_ENV
+          echo "✅ دسته: $CAT → زیرپوشه: $FOLDER_NAME"
+          echo "📄 نام اصلی فایل: $ORIGINAL_FILENAME"
+
+      - name: 🔄 تغییر نام فایل به نام اصلی
+        run: |
+          mv downloaded_file "${{ env.ORIGINAL_FILENAME }}"
+          echo "فایل به نام ${{ env.ORIGINAL_FILENAME }} تغییر نام یافت"
+          ls -lh "${{ env.ORIGINAL_FILENAME }}"
 
       - name: 🗜️ فشرده‌سازی و تقسیم (با اعمال رمز)
         run: |
-          # پوشه نهایی: downloads/دسته/نام فایل/
-          FINAL_DIR="downloads/${{ env.CAT }}/${{ env.SAFE_NAME }}"
+          FINAL_DIR="downloads/${{ env.CAT }}/${{ env.FOLDER_NAME }}"
           mkdir -p "$FINAL_DIR"
           
-          # حذف فایل‌های قبلی در آن زیرپوشه (در صورت وجود) تا تداخل پیش نیاید
           rm -f "$FINAL_DIR"/*.7z*
           
-          # فشرده‌سازی
           if [ -z "${{ github.event.inputs.password }}" ]; then
-            7z a -mhe=on -mx=3 -v${{ github.event.inputs.split_size }} "$FINAL_DIR/archive.7z" "./downloaded_file"
+            7z a -mhe=on -mx=3 -v${{ github.event.inputs.split_size }} "$FINAL_DIR/archive.7z" "./${{ env.ORIGINAL_FILENAME }}"
           else
-            7z a -p"${{ github.event.inputs.password }}" -mhe=on -mx=3 -v${{ github.event.inputs.split_size }} "$FINAL_DIR/archive.7z" "./downloaded_file"
+            7z a -p"${{ github.event.inputs.password }}" -mhe=on -mx=3 -v${{ github.event.inputs.split_size }} "$FINAL_DIR/archive.7z" "./${{ env.ORIGINAL_FILENAME }}"
           fi
           
-          echo "✅ فایل در $FINAL_DIR ذخیره شد"
+          echo "✅ پوشه: $FINAL_DIR"
+          echo "✅ فایل درون آرشیو: ${{ env.ORIGINAL_FILENAME }}"
           ls -lh "$FINAL_DIR"
 
       - name: 📝 کامیت و پوش به مخزن
@@ -95,5 +113,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add downloads/
-          git commit -m "Add downloaded file: ${{ env.SAFE_NAME }} (category: ${{ env.CAT }})" || echo "Nothing to commit"
+          git commit -m "Add downloaded file: ${{ env.ORIGINAL_FILENAME }} (category: ${{ env.CAT }})" || echo "Nothing to commit"
           git push
